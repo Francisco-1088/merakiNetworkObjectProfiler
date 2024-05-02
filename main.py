@@ -45,9 +45,54 @@ def determine_string_type(s):
 objects_pd = pd.read_csv("objects.csv")
 objects_l_of_d = objects_pd.to_dict("records")
 
+## Create Groups ##
+
+objectGroups = dashboard.organizations.getOrganizationPolicyObjectsGroups(config.org_id)
+new_groups = []
+
+## Find what groups need to be created 
+for obj in objects_l_of_d:
+    if obj["object_group"] not in objectGroups:
+        if obj["object_group"] not in new_groups:
+            new_groups.append(obj["object_group"])
+
+create_grp_actions = []
+for item in new_groups:
+    create_group_action = dashboard.batch.organizations.createOrganizationPolicyObjectsGroup(
+        organizationId=config.org_id,
+        name=item,
+        category= "NetworkObjectGroup"
+    )
+    create_grp_actions.append(create_group_action) 
+
+print("The following actions will be generated to create new policy groups: ")
+print_tabulate(pd.DataFrame(new_groups))
+proceed = input("Proceed? (Y/N): ")
+
+if proceed == 'Y':
+    create_grp_helper = batch_helper.BatchHelper(dashboard, config.org_id, create_grp_actions,
+                                           linear_new_batches=False, actions_per_new_batch=100)
+    create_grp_helper.prepare()
+    create_grp_helper.generate_preview()
+    create_grp_helper.execute()
+
+    print(f"Helper status is {create_grp_helper.status}")
+
+    batches_report = dashboard.organizations.getOrganizationActionBatches(config.org_id)
+    new_batches_statuses = [{'id': batch['id'], 'status': batch['status']} for batch
+                            in batches_report if batch['id'] in create_grp_helper.submitted_new_batches_ids]
+    failed_batch_ids = [batch['id'] for batch in new_batches_statuses if batch['status']['failed']]
+    print(f'Failed batch IDs are as follows: {failed_batch_ids}')
+else:
+    print("Skipping creation of new policy objects due to user input.")
+
+
+## Create Objects ## 
+objectGroups = dashboard.organizations.getOrganizationPolicyObjectsGroups(config.org_id)
 new_obj = []
 print("Classifying objects in your CSV as follows... "
-      "(Note: IPv6 objects are not supported at this time, and Unknown objects will be ignored).")
+      "(Note: IPv6 objects are not supported at this time, and Unknown objects will be ignored)."
+      "(Note: Only one Group currently supported per object).")
 for obj in objects_l_of_d:
     result = determine_string_type(obj["object"])
     print(f"{obj['object']}: {result}")
@@ -59,8 +104,10 @@ for obj in objects_l_of_d:
                     "name": obj["object_name"],
                     "category": "network",
                     "type": "cidr",
-                    "cidr": obj["object"],
+                    "cidr": obj["object"]
                 }
+                if "object_group" in obj:
+                    item["group"] = [group['id'] for group in objectGroups if group.get('name') == obj["object_group"]]
                 new_obj.append(item)
         elif result == "host":
             ip_address = ipaddress.ip_address(obj["object"])
@@ -71,6 +118,8 @@ for obj in objects_l_of_d:
                     "type": "cidr",
                     "cidr": obj["object"],
                 }
+                if "object_group" in obj:
+                    item["group"] = [group['id'] for group in objectGroups if group.get('name') == obj["object_group"]]
                 new_obj.append(item)
         elif result == "fqdn":
             item = {
@@ -79,6 +128,8 @@ for obj in objects_l_of_d:
                 "type": result,
                 "fqdn": obj["object"]
             }
+            if "object_group" in obj:
+                item["group"] = [group['id'] for group in objectGroups if group.get('name') == obj["object_group"]]
             new_obj.append(item)
 
 existing_objects = [obj for obj in dashboard.organizations.getOrganizationPolicyObjects(config.org_id, total_pages=-1)
